@@ -2,6 +2,7 @@ from threading import Thread
 import time
 import pika
 import redis
+import json
 
 class Singleton:
     """
@@ -29,15 +30,15 @@ class Singleton:
         On all subsequent calls, the already created instance is returned.
 
         """
-        logger = args['logger']
+        logger = args['log']
         try:
             if self._instance:
-                logger.info("Crystal - Singleton instance of Introspection"
+                logger.info("Crystal - Singleton instance of introspection"
                             " control already created")
                 return self._instance
         except AttributeError:
             logger.info("Crystal - Creating singleton instance of"
-                        " Introspection control")
+                        " introspection control")
             self._instance = self._decorated(**args)
             return self._instance
 
@@ -50,30 +51,34 @@ class Singleton:
 
 @Singleton
 class CrystalIntrospectionControl():
-    def __init__(self, conf, logger):
-        self.logger = logger
+    def __init__(self, conf, log):
+        self.logger = log
         self.conf = conf
         
         self.control_thread = ControlThread(self.conf)
         self.control_thread.daemon = True
-        self.control_thread.start()
         
         self.publish_thread = PublishThread(self.conf)
         self.publish_thread.daemon = True
-        self.publish_thread.start()
+        
+        self.threads_started = False
 
     def get_metrics(self):
-        return self.control_thread.metric_list
+        return self.control_thread.metric_list 
     
+    def publish_metric(self,routing_key, key, value):
+        self.publish_thread.publish(routing_key, key, value)
 
 class PublishThread(Thread):
     
     def __init__(self, conf):
         Thread.__init__(self)
-        self.number = 0
-        self.alive = True
+        
+        self.monitoring_data = dict()
         self.interval = conf.get('publish_interval',1)
         self.ip = conf.get('bind_ip')+":"+conf.get('bind_port')
+        self.exchange = conf.get('exchange', 'amq.topic')
+        
         rabbit_host = conf.get('rabbit_host')
         rabbit_port = int(conf.get('rabbit_port'))
         rabbit_user = conf.get('rabbit_username')
@@ -85,20 +90,34 @@ class PublishThread(Thread):
                                                credentials = credentials)
         self.rabbit = pika.BlockingConnection(parameters)
       
-    def run(self):
-        while self.alive:
-            time.sleep(self.interval)
-            print "Publish Thread "+ str(self.number)
-            self.number+=1
+    def publish(self, routing_key, key, value):
+        if not routing_key in self.monitoring_data:
+            self.monitoring_data[routing_key] = dict()
+            if not key in self.monitoring_data[routing_key]:
+                self.monitoring_data[routing_key][key] = 0
 
+        self.monitoring_data[routing_key][key]+=value
+
+        
+    def run(self):
+        channel = self.rabbit.channel()
+        data = dict()
+        while True:
+            time.sleep(self.interval)
+            for routing_key in self.monitoring_data.keys():
+                data[self.ip] = self.monitoring_data[routing_key]
+                del self.monitoring_data[routing_key]
+                channel.basic_publish(exchange=self.exchange, 
+                                      routing_key=routing_key, 
+                                      body=json.dumps(data))
+        
+                
 class ControlThread(Thread):
     
-    def __init__(self, interval, conf):
+    def __init__(self, conf):
         Thread.__init__(self)
-        self.number = 0
-        self.alive = True
-        self.interval = interval
-        self.conf.get('control_interval',10)
+
+        self.interval = conf.get('control_interval',10)
         redis_host = conf.get('redis_host')
         redis_port = conf.get('redis_port')
         redis_db = conf.get('redis_db')
@@ -107,10 +126,9 @@ class ControlThread(Thread):
                                        redis_port, 
                                        redis_db)
         
-        self.metric_list = list()
+        self.metric_list = None
       
     def run(self):
-        while self.alive:
+        while True:
+            self.metric_list = self.redis.hgetall("metrics")
             time.sleep(self.interval)
-            print "Control Thread "+ str(self.number)
-            self.number+=1
