@@ -3,6 +3,8 @@ from swift.common.swob import HTTPInternalServerError
 from swift.common.swob import HTTPException
 from swift.common.swob import wsgify
 from swift.common.utils import get_logger
+import time
+import json
 
 PACKAGE_NAME = __name__.split('.')[0]
 
@@ -14,6 +16,7 @@ class CrystalIntrospectionHandler():
         self.logger = logger
         self.conf = conf
         self.request = request
+        self.response = None
         self.crystal_control = crystal_control
         self._start_control_threads()
         
@@ -24,6 +27,7 @@ class CrystalIntrospectionHandler():
                 self.crystal_control.publish_thread.start()
                 self.crystal_control.control_thread.start()
                 self.crystal_control.threads_started = True
+                time.sleep(0.1)
             except:
                 self.logger.info("Crystal - Error starting introspection threads.")
             
@@ -31,18 +35,30 @@ class CrystalIntrospectionHandler():
         (modulename, classname) = metric.rsplit('.', 1)
         m = __import__(PACKAGE_NAME+'.'+modulename, globals(), locals(), [classname])
         m_class = getattr(m, classname) 
-        metric_class = m_class(self.logger, self.crystal_control, 
-                               modulename, self.exec_server)
+        metric_class = m_class(self.logger, self.crystal_control, modulename, 
+                               self.exec_server, self.request, self.response)
         return metric_class
 
     def handle_request(self):
         metrics = self.crystal_control.get_metrics()
-        if metrics:
-            for metric in metrics:    
-                metric_class = self._import_metric(metric)            
-                metric_class.execute(self.request)
 
-        return self.request.get_response(self.app)
+        for metric in metrics:
+            params = json.loads(metrics[metric].replace("'",'"').lower())
+            if params['in_flow']:
+                self.logger.info("Go to execute metric on request: "+metric)
+                metric_class = self._import_metric(metric)            
+                self.request = metric_class.execute()
+
+        self.response = self.request.get_response(self.app)
+        
+        for metric in metrics:
+            params = json.loads(metrics[metric].replace("'",'"').lower())
+            if params['out_flow']:
+                self.logger.info("Go to execute metric on response: "+metric)
+                metric_class = self._import_metric(metric)            
+                self.response = metric_class.execute()
+        
+        return self.response    
 
 class CrystalIntrospectionHandlerMiddleware(object):
 

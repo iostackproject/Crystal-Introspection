@@ -1,15 +1,12 @@
 from abstract_metric import AbstractMetric
 
-class GetTenant(AbstractMetric):
+class GetContainer(AbstractMetric):
         
-    def execute(self, request):
+    def execute(self):
         """
         Execute Metric
         """
-        if request.method == "GET":
-            if self.current_server == 'proxy':
-                _, acc, cont, _ = request.split_path(4, 4, rest_with_last=True)
-            else:
-                _, _, acc, cont, _ = request.split_path(5, 5, rest_with_last=True)
+        if self.request.method == "GET" and self._is_object_request():
+            self.register_metric(self.account+"/"+self.container,1)
                 
-            self.register_metric(acc+"/"+cont,1) 
+        return self.request    

@@ -95,21 +95,27 @@ class PublishThread(Thread):
             self.monitoring_data[routing_key] = dict()
             if not key in self.monitoring_data[routing_key]:
                 self.monitoring_data[routing_key][key] = 0
-
+                
         self.monitoring_data[routing_key][key]+=value
-
         
     def run(self):
-        channel = self.rabbit.channel()
         data = dict()
         while True:
             time.sleep(self.interval)
+            channel = self.rabbit.channel()
             for routing_key in self.monitoring_data.keys():
-                data[self.ip] = self.monitoring_data[routing_key]
-                del self.monitoring_data[routing_key]
+                data[self.ip] = self.monitoring_data[routing_key].copy()
+                
+                for key in self.monitoring_data[routing_key].keys():
+                    if self.monitoring_data[routing_key][key] == 0:
+                        del self.monitoring_data[routing_key]
+                    else:
+                        self.monitoring_data[routing_key][key] = 0
+                        
                 channel.basic_publish(exchange=self.exchange, 
                                       routing_key=routing_key, 
                                       body=json.dumps(data))
+                
         
                 
 class ControlThread(Thread):
@@ -126,7 +132,7 @@ class ControlThread(Thread):
                                        redis_port, 
                                        redis_db)
         
-        self.metric_list = None
+        self.metric_list = {}
       
     def run(self):
         while True:
