@@ -66,15 +66,19 @@ class CrystalIntrospectionControl():
     def get_metrics(self):
         return self.control_thread.metric_list 
     
-    def publish_metric(self,routing_key, key, value):
-        self.publish_thread.publish(routing_key, key, value)
-
+    def publish_stateful_metric(self,routing_key, key, value):
+        self.publish_thread.publish_statefull(routing_key, key, value)
+    
+    def publish_stateless_metric(self,routing_key, key, value):
+        self.publish_thread.publish_stateless(routing_key, key, value)
+        
 class PublishThread(Thread):
     
     def __init__(self, conf):
         Thread.__init__(self)
         
-        self.monitoring_data = dict()
+        self.monitoring_statefull_data = dict()
+        self.monitoring_stateless_data = dict()
         self.interval = conf.get('publish_interval',1)
         self.ip = conf.get('bind_ip')+":"+conf.get('bind_port')
         self.exchange = conf.get('exchange', 'amq.topic')
@@ -90,34 +94,49 @@ class PublishThread(Thread):
                                                credentials = credentials)
         self.rabbit = pika.BlockingConnection(parameters)
       
-    def publish(self, routing_key, key, value):
-        if not routing_key in self.monitoring_data:
-            self.monitoring_data[routing_key] = dict()
-            if not key in self.monitoring_data[routing_key]:
-                self.monitoring_data[routing_key][key] = 0
+    def publish_statefull(self, routing_key, key, value):
+        if not routing_key in self.monitoring_statefull_data:
+            self.monitoring_statefull_data[routing_key] = dict()
+            if not key in self.monitoring_statefull_data[routing_key]:
+                self.monitoring_statefull_data[routing_key][key] = 0
                 
-        self.monitoring_data[routing_key][key]+=value
-        
+        self.monitoring_statefull_data[routing_key][key] += value
+            
+    def publish_stateless(self, routing_key, key, value):
+        if not routing_key in self.monitoring_stateless_data:
+            self.monitoring_stateless_data[routing_key] = dict()
+            if not key in self.monitoring_stateless_data[routing_key]:
+                self.monitoring_stateless_data[routing_key][key] = 0
+                
+        self.monitoring_stateless_data[routing_key][key] += value
+       
     def run(self):
         data = dict()
         while True:
             time.sleep(self.interval)
             channel = self.rabbit.channel()
-            for routing_key in self.monitoring_data.keys():
-                data[self.ip] = self.monitoring_data[routing_key].copy()
+            
+            for routing_key in self.monitoring_stateless_data.keys():
+                data[self.ip] = self.monitoring_stateless_data[routing_key].copy()
                 
-                for key in self.monitoring_data[routing_key].keys():
-                    if self.monitoring_data[routing_key][key] == 0:
-                        del self.monitoring_data[routing_key]
+                for key in self.monitoring_stateless_data[routing_key].keys():
+                    if self.monitoring_stateless_data[routing_key][key] == 0:
+                        del self.monitoring_stateless_data[routing_key]
                     else:
-                        self.monitoring_data[routing_key][key] = 0
+                        self.monitoring_stateless_data[routing_key][key] = 0
                         
                 channel.basic_publish(exchange=self.exchange, 
                                       routing_key=routing_key, 
                                       body=json.dumps(data))
                 
-        
+            for routing_key in self.monitoring_statefull_data.keys():
+                data[self.ip] = self.monitoring_statefull_data[routing_key].copy()
+                        
+                channel.basic_publish(exchange=self.exchange, 
+                                      routing_key=routing_key, 
+                                      body=json.dumps(data))
                 
+     
 class ControlThread(Thread):
     
     def __init__(self, conf):

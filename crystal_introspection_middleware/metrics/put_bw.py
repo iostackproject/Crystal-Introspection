@@ -9,12 +9,12 @@ class PutBw(AbstractMetric):
         """ 
         if self.method == "PUT" and self._is_object_request():
             ''' When we intercept the request, all chunks will enter by run_metric method ''' 
-            self._intercept_request()
+            self._intercept_put()
             
         ''' It is necessary to return the intercepted request '''             
         return self.request
  
-    def run_metric(self, chunk):
+    def on_read(self, chunk):
         ''' In this case, the metric count the number of bytes '''
         mbytes = (len(chunk)/1024.0)/1024
         self.register_metric(self.account,mbytes)

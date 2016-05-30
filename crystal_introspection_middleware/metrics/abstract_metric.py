@@ -13,8 +13,7 @@ class AbstractMetric(object):
         self.metric_name = metric_name
         self.current_server = server
         self.method = self.request.method
-        self.storlet_executed = False
-        
+        self.state = 'stateless'
         self._parse_vaco()
         
     def register_metric(self, key, value):
@@ -22,7 +21,10 @@ class AbstractMetric(object):
         Send data to publish thread
         """
         routing_key = self.metric_name
-        self.crystal_control.publish_metric(routing_key, key, value)
+        if self.state == "stateful":
+            self.crystal_control.publish_stateful_metric(routing_key, key, value)
+        else: 
+            self.crystal_control.publish_stateless_metric(routing_key, key, value)
         
     def _is_object_request(self):
         if self.current_server == 'proxy':
@@ -35,28 +37,70 @@ class AbstractMetric(object):
         else:
             # TODO: Check for object-server
             return True
+        
+    def _is_storlet_executed(self):
+        # TODO: Check if Storlet was executed
 
+        return False
+
+    def _is_get_already_intercepted(self):
+        return isinstance(self.response.app_iter,IterLikeFileDescriptor) or \
+               isinstance(self.response.app_iter,IterLikeGetProxy)
+         
+    def _is_put_already_intercepted(self):
+        return isinstance(self.request.environ['wsgi.input'],IterLikePut)
+               
+    def _get_applied_metrics_on_get(self):
+        if hasattr(self.response.app_iter, 'metrics'):
+            metrics = self.response.app_iter.metrics
+            self.response.app_iter.metrics = list()
+            return metrics 
+        else:
+            return list()
+    
+    def _get_applied_metrics_on_put(self):
+        if hasattr(self.request.environ['wsgi.input'], 'metrics'):
+            metrics = self.request.environ['wsgi.input'].metrics
+            self.request.environ['wsgi.input'].metrics = list()
+            return metrics 
+        else:
+            return list()
+        
     def _get_object_reader(self):
         if self.method == 'GET' and self.current_server == 'proxy':
-                reader = self.response.app_iter
+            reader = self.response.app_iter
         if self.method == 'GET' and self.current_server == 'object':
-                reader = self.response.app_iter._fp
-        if self.method == 'GET' and self.storlet_executed:
-                reader = self.response.app_iter.obj_data
-        if self.method == "PUT":
+            reader = self.response.app_iter._fp
+        if self.method == 'GET' and (self._is_storlet_executed() or self._is_get_already_intercepted()):
+            reader = self.response.app_iter.obj_data
+            self.response.app_iter.obj_data = None
+            
+        if self.method == "PUT" and not self._is_put_already_intercepted():
             reader = self.request.environ['wsgi.input']
+        elif self.method == "PUT":
+            reader = self.request.environ['wsgi.input'].obj_data
+            self.request.environ['wsgi.input'].obj_data = None
 
         return reader
     
-    def _intercept_request(self):
+    def _intercept_get(self):
         reader = self._get_object_reader()
-        if self.method == 'GET' and (self.storlet_executed or self.current_server == 'object'):
-            self.response.app_iter = IterLikeFileDescriptor(reader, self, 10)
+        metrics = self._get_applied_metrics_on_get()
+        metrics.append(self)
+
+        if self.method == 'GET' and self.current_server == 'object':
+            self.response.app_iter = IterLikeFileDescriptor(reader, metrics, 10)
         if self.method == 'GET' and self.current_server == 'proxy':
-            self.response.app_iter = IterLikeGetProxy(reader, self, 10)
-        if self.method == 'PUT':
-            self.request.environ['wsgi.input'] = IterLikePut(reader, self, 10)
+            self.response.app_iter = IterLikeGetProxy(reader, metrics, 10)
+    
+    def _intercept_put(self):
+        reader = self._get_object_reader()
+        metrics = self._get_applied_metrics_on_put()
+        metrics.append(self)
         
+        if self.method == 'PUT':
+            self.request.environ['wsgi.input'] = IterLikePut(reader, metrics, 10)
+
     def _parse_vaco(self):
         if self._is_object_request():
             if self.current_server == 'proxy':  
@@ -65,24 +109,36 @@ class AbstractMetric(object):
                 _, _, self.account, self.container, self.object = self.request.split_path(5, 5, rest_with_last=True)
     
     def execute(self, request):
-        """
-        Execute Metric
-        """
+        """ Execute Metric """
         raise NotImplementedError()
+    
+    def on_read(self, chunk):
+        pass
 
+    def on_finish(self):
+        pass
 
 
 class IterLike(object):
-    def __init__(self, obj_data, metric, timeout):
+    
+    def __init__(self, obj_data, metrics, timeout):
         self.closed = False
         self.obj_data = obj_data
         self.timeout = timeout
-        self.metric = metric
+        self.metrics = metrics
         self.buf = b''
-
+        
     def __iter__(self):
         return self
 
+    def _apply_metrics_on_read(self,chunk):     
+        for metric in self.metrics:
+            metric.on_read(chunk)
+        
+    def _apply_metrics_on_finish(self):
+        for metric in self.metrics:
+            metric.on_finish()
+            
     def read_with_timeout(self, size):
         raise NotImplementedError()
 
@@ -152,19 +208,21 @@ class IterLikePut(IterLike):
         try:
             with Timeout(self.timeout):
                 chunk = self.obj_data.read(size)
-                self.metric.run_metric(chunk)
+                self._apply_metrics_on_read(chunk)
         except Timeout:
             self.close()
             raise
         except Exception:
             self.close()
             raise
+
         return chunk
 
     def next(self, size=CHUNK_SIZE):
         if len(self.buf) < size:
             self.buf += self.read_with_timeout(size - len(self.buf))
             if self.buf == b'':
+                self.close()
                 raise StopIteration('Stopped iterator ex')
 
         if len(self.buf) > size:
@@ -178,16 +236,21 @@ class IterLikePut(IterLike):
     def close(self):
         if self.closed:
             return
+        self._apply_metrics_on_finish()
         self.closed = True
-        self.obj_data.close()
-
+        try:
+            self.obj_data.close()
+        except:
+            pass
+        
+        
 class IterLikeGetProxy(IterLike):
 
     def read_with_timeout(self, size):
         try:
             with Timeout(self.timeout):
                 chunk = self.obj_data.next()
-                self.metric.run_metric(chunk)
+                self._apply_metrics_on_read(chunk)
         except Timeout:
             self.close()
             raise
@@ -213,8 +276,12 @@ class IterLikeGetProxy(IterLike):
     def close(self):
         if self.closed:
             return
+        self._apply_metrics_on_finish()
         self.closed = True
-        self.obj_data.close()
+        try:
+            self.obj_data.close()
+        except:
+            pass
 
         
 class IterLikeFileDescriptor(IterLike):
@@ -231,7 +298,7 @@ class IterLikeFileDescriptor(IterLike):
         try:
             with Timeout(self.timeout):
                 chunk = os.read(self.obj_data, size) 
-                self.metric.run_metric(chunk)
+                self._apply_metrics_on_read(chunk)
         except Timeout:
             self.close()
             raise
@@ -264,8 +331,8 @@ class IterLikeFileDescriptor(IterLike):
     def close(self):
         if self.closed:
             return
+        self._apply_metrics_on_finish()
         self.closed = True
-        
         self.epoll.unregister(self.obj_data)
         self.epoll.close()
         os.close(self.obj_data)
