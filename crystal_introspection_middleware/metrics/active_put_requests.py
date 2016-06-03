@@ -15,5 +15,4 @@ class ActivePutRequests(AbstractMetric):
         return self.request
 
     def on_finish(self):
-        print "---------------------"
         self.register_metric(self.account,-1)

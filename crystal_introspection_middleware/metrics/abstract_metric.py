@@ -5,7 +5,8 @@ import os
 CHUNK_SIZE = 64 * 1024
 
 class AbstractMetric(object):
-    def __init__(self, logger, crystal_control, metric_name, server, request, response):
+    def __init__(self, logger, crystal_control, metric_name, server,
+                 request, response):
         self.logger = logger
         self.request = request
         self.response = response
@@ -22,9 +23,11 @@ class AbstractMetric(object):
         """
         routing_key = self.metric_name
         if self.state == "stateful":
-            self.crystal_control.publish_stateful_metric(routing_key, key, value)
+            self.crystal_control.publish_stateful_metric(routing_key, 
+                                                         key, value)
         else: 
-            self.crystal_control.publish_stateless_metric(routing_key, key, value)
+            self.crystal_control.publish_stateless_metric(routing_key, 
+                                                          key, value)
         
     def _is_object_request(self):
         if self.current_server == 'proxy':
@@ -40,7 +43,6 @@ class AbstractMetric(object):
         
     def _is_storlet_executed(self):
         # TODO: Check if Storlet was executed
-
         return False
 
     def _is_get_already_intercepted(self):
@@ -67,14 +69,16 @@ class AbstractMetric(object):
             return list()
         
     def _get_object_reader(self):
-        if self.method == 'GET' and self.current_server == 'proxy':
-            reader = self.response.app_iter
-        if self.method == 'GET' and self.current_server == 'object':
-            reader = self.response.app_iter._fp
-        if self.method == 'GET' and (self._is_storlet_executed() or self._is_get_already_intercepted()):
-            reader = self.response.app_iter.obj_data
-            self.response.app_iter.obj_data = None
-            
+
+        if self.method == 'GET':
+            if self.current_server == 'proxy':
+                reader = self.response.app_iter
+            if self.current_server == 'object':
+                reader = self.response.app_iter._fp
+            if self._is_get_already_intercepted():
+                reader = self.response.app_iter.obj_data
+                self.response.app_iter.obj_data = None
+   
         if self.method == "PUT" and not self._is_put_already_intercepted():
             reader = self.request.environ['wsgi.input']
         elif self.method == "PUT":
@@ -88,18 +92,21 @@ class AbstractMetric(object):
         metrics = self._get_applied_metrics_on_get()
         metrics.append(self)
 
-        if self.method == 'GET' and self.current_server == 'object':
-            self.response.app_iter = IterLikeFileDescriptor(reader, metrics, 10)
-        if self.method == 'GET' and self.current_server == 'proxy':
-            self.response.app_iter = IterLikeGetProxy(reader, metrics, 10)
-    
+        if self.method == 'GET':
+            if self.current_server == 'object':
+                self.response.app_iter = IterLikeFileDescriptor(reader,
+                                                                metrics, 10)
+            if self.current_server == 'proxy':
+                self.response.app_iter = IterLikeGetProxy(reader, metrics, 10)
+
     def _intercept_put(self):
         reader = self._get_object_reader()
         metrics = self._get_applied_metrics_on_put()
         metrics.append(self)
         
         if self.method == 'PUT':
-            self.request.environ['wsgi.input'] = IterLikePut(reader, metrics, 10)
+            self.request.environ['wsgi.input'] = IterLikePut(reader,
+                                                             metrics, 10)
 
     def _parse_vaco(self):
         if self._is_object_request():
@@ -286,7 +293,7 @@ class IterLikeGetProxy(IterLike):
         
 class IterLikeFileDescriptor(IterLike):
     def __init__(self, obj_data, metric, timeout):        
-        IterLike.__init__(obj_data, metric, timeout)
+        super(IterLikeFileDescriptor, self).__init__(obj_data, metric, timeout)
 
         self.epoll = select.epoll()
         self.epoll.register(self.obj_data, select.EPOLLIN | select.EPOLLPRI)
@@ -336,3 +343,4 @@ class IterLikeFileDescriptor(IterLike):
         self.epoll.unregister(self.obj_data)
         self.epoll.close()
         os.close(self.obj_data)
+        

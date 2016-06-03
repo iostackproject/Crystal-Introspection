@@ -1,4 +1,4 @@
-# Crystal Introspection Middleware
+# Crystal Introspection Middleware for OpenStack Swift
 
 ## Installation
 

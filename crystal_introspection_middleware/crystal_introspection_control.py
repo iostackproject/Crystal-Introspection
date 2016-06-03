@@ -79,7 +79,8 @@ class PublishThread(Thread):
         
         self.monitoring_statefull_data = dict()
         self.monitoring_stateless_data = dict()
-        self.interval = conf.get('publish_interval',1)
+        
+        self.interval = conf.get('publish_interval',1.01)
         self.ip = conf.get('bind_ip')+":"+conf.get('bind_port')
         self.exchange = conf.get('exchange', 'amq.topic')
         
@@ -89,10 +90,9 @@ class PublishThread(Thread):
         rabbit_pass = conf.get('rabbit_password')
 
         credentials = pika.PlainCredentials(rabbit_user,rabbit_pass)  
-        parameters = pika.ConnectionParameters(host = rabbit_host,
-                                               port = rabbit_port,
-                                               credentials = credentials)
-        self.rabbit = pika.BlockingConnection(parameters)
+        self.parameters = pika.ConnectionParameters(host = rabbit_host,
+                                                    port = rabbit_port,
+                                                    credentials = credentials)
       
     def publish_statefull(self, routing_key, key, value):
         if not routing_key in self.monitoring_statefull_data:
@@ -114,7 +114,8 @@ class PublishThread(Thread):
         data = dict()
         while True:
             time.sleep(self.interval)
-            channel = self.rabbit.channel()
+            rabbit = pika.BlockingConnection(self.parameters)
+            channel = rabbit.channel()
             
             for routing_key in self.monitoring_stateless_data.keys():
                 data[self.ip] = self.monitoring_stateless_data[routing_key].copy()
