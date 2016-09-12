@@ -1,4 +1,8 @@
-# Crystal Introspection Middleware for OpenStack Swift
+This repository has moved to<br />https://github.com/Crystal-SDS/introspection-middleware
+=========================================================================================
+
+Crystal Introspection Middleware for OpenStack Swift
+====================================================
 
 ## Installation
 
